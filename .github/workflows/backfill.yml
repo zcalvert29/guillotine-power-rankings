@@ -1,7 +1,12 @@
 name: Rebuild track record
 
 on:
-  workflow_dispatch: {}   # run once (or again any time) to rebuild past weeks' pre-kickoff chop odds
+  workflow_dispatch:      # run once (or again any time) to rebuild past weeks
+    inputs:
+      force:
+        description: "Rebuild every past week, even ones that already have a snapshot"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -23,7 +28,7 @@ jobs:
       - name: Rebuild past weeks
         env:
           LEAGUE_ID: ${{ vars.LEAGUE_ID || '1389750406673883136' }}
-        run: python -m pipeline.backfill
+        run: python -m pipeline.backfill ${{ inputs.force && '--force' || '' }}
       - name: Commit
         run: |
           git config user.name "guillotine-bot"

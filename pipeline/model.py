@@ -88,6 +88,7 @@ def build_context(src, as_of_week=None):
         W = int(as_of_week)
         first_day = min(g["date"] for g in schedule if g["week"] == W)
         kickoff_ms = int(dt.datetime.fromisoformat(first_day).replace(hour=12, tzinfo=ZoneInfo("America/Chicago")).timestamp() * 1000)  # waivers run overnight; first game is in the evening
+        all_tx = list(tx)
         tx = [t for t in tx if (t.get("status_updated") or t.get("created") or 0) < kickoff_ms]
         chops = [c for c in chops if c[0] < W]
         gone = {c[1] for c in chops}
@@ -131,9 +132,19 @@ def build_context(src, as_of_week=None):
     faab_budget = int((league.get("settings") or {}).get("waiver_budget") or 100)
     faab = {rid: faab_budget - int((rmap[rid].get("settings") or {}).get("waiver_budget_used") or 0) for rid in rmap}
     if as_of_week:
-        # rosters as played that week; FAAB from moves processed before kickoff
-        wk = {m["roster_id"]: m for m in (src.matchups(start) or [])}
-        roster_players = {rid: [p for p in ((wk.get(rid) or {}).get("players") or []) if p in P] for rid in rmap}
+        # rosters at kickoff: start from today's rosters and undo every move made after kickoff, newest first
+        roster_players = {rid: list(rmap[rid].get("players") or []) for rid in rmap}
+        later = sorted([t for t in all_tx if t.get("status") == "complete"
+                        and (t.get("status_updated") or t.get("created") or 0) >= kickoff_ms],
+                       key=lambda t: -(t.get("status_updated") or t.get("created") or 0))
+        for t in later:
+            for p, rid in (t.get("adds") or {}).items():
+                if p in roster_players.get(rid, []):
+                    roster_players[rid].remove(p)
+            for p, rid in (t.get("drops") or {}).items():
+                if rid in roster_players and p not in roster_players[rid]:
+                    roster_players[rid].append(p)
+        roster_players = {rid: [p for p in v if p in P] for rid, v in roster_players.items()}
         reserve = {rid: set() for rid in rmap}
         faab = {rid: faab_budget for rid in rmap}
         for t in tx:
@@ -196,7 +207,7 @@ def build_context(src, as_of_week=None):
         names={rid: _team_name(users.get(rmap[rid]["owner_id"], {})) if rmap[rid].get("owner_id") else f"Team {rid}" for rid in rmap},
         usernames={rid: (users.get(rmap[rid]["owner_id"], {}) or {}).get("display_name") for rid in rmap},
         eliminated=[dict(week=c[0], roster_id=c[1]) for c in chops],
-        pending=pending, pending_from=pending_from, live=live, tx=tx, rebuilt=bool(as_of_week),
+        pending=pending, pending_from=pending_from, live=live, tx=tx, rebuilt=bool(as_of_week), as_of_ms=kickoff_ms,
     )
 
 
@@ -427,19 +438,21 @@ def summarize(ctx, res, generated_at):
             continue
         recent.append(dict(
             time=t.get("status_updated") or t.get("created"), type=t["type"], week=t.get("leg"),
-            teams=[names.get(r) for r in t.get("roster_ids") or []],
+            teams=[names.get(r) for r in t.get("roster_ids") or []], rids=list(t.get("roster_ids") or []),
             adds=[dict(player=pname(p), to=names.get(r)) for p, r in (t.get("adds") or {}).items()],
             drops=[dict(player=pname(p), frm=names.get(r)) for p, r in (t.get("drops") or {}).items()],
             bid=(t.get("settings") or {}).get("waiver_bid"),
-            faab_moves=[dict(amount=b["amount"], frm=names.get(b["sender"]), to=names.get(b["receiver"])) for b in t.get("waiver_budget") or []],
+            faab_moves=[dict(amount=b["amount"], frm=names.get(b["sender"]), to=names.get(b["receiver"]),
+                             frm_id=b["sender"], to_id=b["receiver"]) for b in t.get("waiver_budget") or []],
         ))
-        if len(recent) >= 60:
+        if len(recent) >= 250:
             break
 
     return dict(
         generated_at=generated_at, league_name=ctx["league_name"], season=ctx["season"],
         current_week=ctx["current_week"], start_week=start, final_week=final, n_sims=N,
-        week_in_progress=bool(ctx["live"]), rebuilt=ctx.get("rebuilt", False), params=ctx["params"], sd_fit=ctx["sd_fit"],
+        week_in_progress=bool(ctx["live"]), rebuilt=ctx.get("rebuilt", False),
+        as_of_ms=ctx.get("as_of_ms") or int(dt.datetime.fromisoformat(generated_at).timestamp() * 1000), params=ctx["params"], sd_fit=ctx["sd_fit"],
         faab_budget=ctx["faab_budget"], teams=teams,
         eliminated=[dict(week=e["week"], roster_id=e["roster_id"], name=names[e["roster_id"]]) for e in ctx["eliminated"]],
         pending_from=(dict(week=ctx["pending_from"]["week"], name=names[ctx["pending_from"]["roster_id"]])
