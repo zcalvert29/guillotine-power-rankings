@@ -443,7 +443,9 @@ with tab_track:
         clean = rd[rd["clean"]]
         g = clean if len(clean) else rd
         m1, m2, m3 = st.columns(3)
-        m1.metric("Chopped team was the model's #1 pick", f"{int((g['rank'] == 1).sum())} of {len(g)}")
+        m1.metric("Chopped team was in the model's top 3", f"{int((g['rank'] <= 3).sum())} of {len(g)}",
+                  help="Weeks where the team that got chopped was one of the model's three most likely picks.")
+        m1.caption(f"Random guess: {(3 / g['n']).clip(upper=1).sum():.1f} of {len(g)}")
         m2.metric("Avg. chop odds given to the chopped team", f"{g['p'].mean():.0%}",
                   help="Higher is better. Compare with picking at random (next to it).")
         m2.caption(f"Random guess: {g['base'].mean():.0%}")
