@@ -40,6 +40,12 @@ PARAMS = dict(
 
 # ----------------------------------------------------------------------------- context
 
+def week_cutoff_ms(schedule, W):
+    """End of week W's roster window: 6 PM Central on the day of its last game (SNF/MNF kick off after that)."""
+    last_day = max(g["date"] for g in schedule if g["week"] == W)
+    return int(dt.datetime.fromisoformat(last_day).replace(hour=18, tzinfo=ZoneInfo("America/Chicago")).timestamp() * 1000)
+
+
 def _team_name(u):
     md = u.get("metadata") or {}
     return md.get("team_name") or u.get("display_name")
@@ -86,8 +92,8 @@ def build_context(src, as_of_week=None):
     kickoff_ms = None
     if as_of_week:
         W = int(as_of_week)
-        first_day = min(g["date"] for g in schedule if g["week"] == W)
-        kickoff_ms = int(dt.datetime.fromisoformat(first_day).replace(hour=12, tzinfo=ZoneInfo("America/Chicago")).timestamp() * 1000)  # waivers run overnight; first game is in the evening
+        # "as played": rosters/FAAB as of the week's last game (6 PM CT that day), so game-day trades count in that week
+        kickoff_ms = week_cutoff_ms(schedule, W)
         all_tx = list(tx)
         tx = [t for t in tx if (t.get("status_updated") or t.get("created") or 0) < kickoff_ms]
         chops = [c for c in chops if c[0] < W]
@@ -208,6 +214,7 @@ def build_context(src, as_of_week=None):
         usernames={rid: (users.get(rmap[rid]["owner_id"], {}) or {}).get("display_name") for rid in rmap},
         eliminated=[dict(week=c[0], roster_id=c[1]) for c in chops],
         pending=pending, pending_from=pending_from, live=live, tx=tx, rebuilt=bool(as_of_week), as_of_ms=kickoff_ms,
+        prev_cutoff_ms=week_cutoff_ms(schedule, start - 1) if start > 1 else 0,
     )
 
 
@@ -459,3 +466,88 @@ def summarize(ctx, res, generated_at):
                       if ctx["pending_from"] else None),
         waiver_pool=pool, pool_is_pending=bool(ctx["pending"]), transactions=recent,
     )
+
+
+# ----------------------------------------------------------------------------- move impact (counterfactuals)
+
+def _undo(ctx, t):
+    """Copy of ctx with one transaction reversed (players and FAAB). Returns None if it can't be cleanly undone."""
+    alive = set(ctx["alive"])
+    rp = {rid: list(v) for rid, v in ctx["roster_players"].items()}
+    faab = dict(ctx["faab"])
+    owner = {p: rid for rid in alive for p in rp.get(rid, [])}
+    for p, rid in (t.get("adds") or {}).items():
+        if rid in alive and p in rp.get(rid, []):
+            rp[rid].remove(p)
+    for p, rid in (t.get("drops") or {}).items():
+        if rid in alive and p in ctx["P"] and owner.get(p) in (None, rid) and p not in rp[rid]:
+            rp[rid].append(p)
+    if t.get("type") == "waiver":
+        for rid in t.get("roster_ids") or []:
+            if rid in faab:
+                faab[rid] += int((t.get("settings") or {}).get("waiver_bid") or 0)
+    for b in t.get("waiver_budget") or []:
+        faab[b["sender"]] = faab.get(b["sender"], 0) + b["amount"]
+        faab[b["receiver"]] = faab.get(b["receiver"], 0) - b["amount"]
+    return dict(ctx, roster_players=rp, faab=faab)
+
+
+def _surv_week(ctx):
+    # during a live week the chop is mostly settled, so judge survival on next week
+    return ctx["start"] + 1 if ctx.get("live") and ctx["start"] + 1 <= ctx["final"] else ctx["start"]
+
+
+def _probs(ctx, res):
+    N, start = res["n"], ctx["start"]
+    weeks = range(start, ctx["final"] + 1)
+    sw = _surv_week(ctx)
+    out = {}
+    for rid in ctx["alive"]:
+        c = res["chop"].get(rid, {})
+        exp = sum(c.get(w, 0) * (w - start) for w in weeks) / N + c.get("champion", 0) / N * len(weeks)
+        out[rid] = dict(win=c.get("champion", 0) / N, exp=exp,
+                        surv=1 - sum(c.get(w, 0) for w in range(start, sw + 1)) / N)
+    return out
+
+
+def move_impacts(ctx, since_ms, until_ms, nsim=1000, seed=7, top=8):
+    """For each significant move in (since, until], re-simulate with that move undone (same random numbers)
+    and report how much it changed each involved team's win %, survival and expected weeks."""
+    E = Engine(ctx)
+    P, names, alive = ctx["P"], ctx["names"], set(ctx["alive"])
+    w0 = ctx["start"]
+    cands = []
+    for t in ctx["tx"]:
+        ts = t.get("status_updated") or t.get("created") or 0
+        if t.get("status") != "complete" or t.get("type") not in ("waiver", "free_agent", "trade") or not (since_ms < ts <= until_ms):
+            continue
+        rids = [r for r in t.get("roster_ids") or [] if r in alive]
+        if not rids:
+            continue
+        size = sum(E.ros(p, w0) for p in list((t.get("adds") or {})) + list((t.get("drops") or {})) if p in P)
+        size += sum(b["amount"] for b in t.get("waiver_budget") or []) / 20 + int((t.get("settings") or {}).get("waiver_bid") or 0) / 20
+        if size >= 15:
+            cands.append((size, ts, t))
+    cands = [t for _, _, t in sorted(cands, key=lambda x: -x[0])[:top]]
+    if not cands:
+        return []
+    base = _probs(ctx, simulate(ctx, nsim=nsim, seed=seed))
+    pn = lambda p: P.get(p, {}).get("name", p)
+    out = []
+    for t in cands:
+        cf_ctx = _undo(ctx, t)
+        cf = _probs(cf_ctx, simulate(cf_ctx, nsim=nsim, seed=seed))
+        teams = []
+        for rid in [r for r in t.get("roster_ids") or [] if r in alive]:
+            got = [pn(p) for p, r in (t.get("adds") or {}).items() if r == rid]
+            gave = [pn(p) for p, r in (t.get("drops") or {}).items() if r == rid]
+            money = sum(b["amount"] * (1 if b["receiver"] == rid else -1) for b in t.get("waiver_budget") or []
+                        if rid in (b["sender"], b["receiver"]))
+            if t["type"] == "waiver":
+                money -= int((t.get("settings") or {}).get("waiver_bid") or 0)
+            teams.append(dict(roster_id=rid, name=names[rid], got=got, gave=gave, faab=money,
+                              d_win=base[rid]["win"] - cf[rid]["win"], d_exp=base[rid]["exp"] - cf[rid]["exp"],
+                              d_surv=base[rid]["surv"] - cf[rid]["surv"]))
+        out.append(dict(id=t.get("transaction_id"), time=t.get("status_updated") or t.get("created"), type=t["type"],
+                        week=t.get("leg"), surv_week=_surv_week(ctx), bid=(t.get("settings") or {}).get("waiver_bid"), teams=teams))
+    return out

@@ -11,7 +11,7 @@ import os
 import time
 from zoneinfo import ZoneInfo
 
-from pipeline.model import build_context, simulate, summarize
+from pipeline.model import build_context, move_impacts, simulate, summarize
 from pipeline.sleeper import DirSource, LiveSource
 
 DEFAULT_LEAGUE = "1389750406673883136"
@@ -26,6 +26,7 @@ def main():
     ap.add_argument("--seed", type=int, default=2026,
                     help="fixed by default so day-to-day changes reflect real moves, not simulation noise")
     ap.add_argument("--out", default=os.path.join(ROOT, "snapshots"))
+    ap.add_argument("--impact-sims", type=int, default=int(os.environ.get("N_IMPACT_SIMS", 1500)))
     ap.add_argument("--date", help="snapshot date label (YYYY-MM-DD); default = today in America/Chicago")
     a = ap.parse_args()
 
@@ -43,6 +44,9 @@ def main():
     res = simulate(ctx, nsim=a.sims, seed=seed)
     snap = summarize(ctx, res, generated_at=now.isoformat(timespec="minutes"))
     snap["snapshot_date"] = label
+    t1 = time.time()
+    snap["moves"] = move_impacts(ctx, ctx["prev_cutoff_ms"], snap["as_of_ms"], nsim=a.impact_sims)
+    print(f"move impacts: {len(snap['moves'])} moves in {time.time() - t1:.0f}s")
     os.makedirs(a.out, exist_ok=True)
     path = os.path.join(a.out, f"{label}.json")
     with open(path, "w") as fh:

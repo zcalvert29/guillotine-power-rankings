@@ -59,7 +59,7 @@ with st.sidebar:
     with st.expander("As of a specific day", expanded=False):
         view_date = st.selectbox("Day", wk_days, index=0,
                                  format_func=lambda d: dt.date.fromisoformat(d).strftime("%a %b %d")
-                                 + (" · rebuilt, pre-kickoff" if snaps[d].get("rebuilt") else "")
+                                 + (" · rebuilt, as played" if snaps[d].get("rebuilt") else "")
                                  + (" (latest)" if d == wk_days[0] else ""))
     S = snaps[view_date]
     earlier = [d for d in dates if d < view_date]
@@ -67,7 +67,7 @@ with st.sidebar:
     prev_weeks = [w for w in week_list if w < view_week]
     if prev_weeks:
         _pd = week_dates[prev_weeks[0]][-1]
-        _lab = ("before kickoff" if snaps[_pd].get("rebuilt")
+        _lab = ("as played" if snaps[_pd].get("rebuilt")
                 else ("latest, " + dt.date.fromisoformat(_pd).strftime("%b %d")))
         base_opts[f"Week {prev_weeks[0]} ({_lab})"] = _pd
     if earlier:
@@ -81,7 +81,7 @@ with st.sidebar:
     mine = next((t["name"] for t in S["teams"] if t.get("username") == MY_USERNAME), team_names[0])
     focus = st.selectbox("Highlight team", team_names, index=team_names.index(mine))
     if S.get("rebuilt"):
-        st.caption(f"Rebuilt as of just before Week {S['start_week']} kickoff, from {S['n_sims']:,} simulated seasons.")
+        st.caption(f"Rebuilt from Week {S['start_week']} rosters as played, {S['n_sims']:,} simulated seasons.")
     else:
         st.caption(f"Snapshot built {S['generated_at'].replace('T', ' ')} CT from {S['n_sims']:,} simulated seasons.")
 
@@ -102,7 +102,7 @@ def as_of(snap):
 
 def snap_label(snap):
     if snap.get("rebuilt"):
-        return f"before Week {snap['start_week']} kickoff"
+        return f"Week {snap['start_week']} (as played)"
     return dt.date.fromisoformat(snap["snapshot_date"]).strftime("%a %b %d")
 
 
@@ -136,8 +136,8 @@ st.markdown(f"**{status}** · {len(S['teams'])} teams alive · season ends Week 
             + (f" · Δ vs {base_label}" if B else ""))
 latest_elim = {e["week"]: e for e in snaps[dates[-1]]["eliminated"]}
 if S.get("rebuilt"):
-    st.caption(f"🔁 Rebuilt view: the league as it stood just before Week {start} kicked off (rosters, FAAB and that week's projections). "
-               "Odds for later weeks use Sleeper's projections as they stand now, so long-range numbers carry some hindsight; "
+    st.caption(f"🔁 Rebuilt view: rosters and FAAB as Week {start} was actually played, including game-day moves, "
+               f"with Sleeper's Week {start} projections. Odds for later weeks use today's projections, so long-range numbers carry some hindsight; "
                f"the Week {start} chop odds don't.")
 if view_week != current_week and view_week in latest_elim:
     e = latest_elim[view_week]
@@ -150,8 +150,8 @@ elif S.get("pool_is_pending") and S.get("pending_from"):
     st.info(f"{S['pending_from']['name']}'s roster (chopped Week {S['pending_from']['week']}) is on waivers. "
             f"See **Waivers** for who's likely to land each player.")
 
-tab_rank, tab_chop, tab_team, tab_waiv, tab_chg, tab_track, tab_about = st.tabs(
-    ["Power rankings", "Chop watch", "Team", "Waivers", "What changed", "Track record", "Method"])
+tab_rank, tab_chop, tab_team, tab_trend, tab_moves, tab_waiv, tab_chg, tab_track, tab_about = st.tabs(
+    ["Power rankings", "Chop watch", "Team", "Trends", "Big moves", "Waivers", "What changed", "Track record", "Method"])
 
 # ----------------------------------------------------------------------------- rankings
 with tab_rank:
@@ -194,27 +194,7 @@ with tab_rank:
     st.caption("Ranked by expected weeks survived. Δ = percentage-point change vs the comparison snapshot."
                + (f" Week {start}'s chop is all but decided, so survival columns look ahead to Week {fw}." if fw != start else ""))
 
-    shown = [d for d in dates if d <= view_date]
-    if len(shown) > 1:
-        hist = []
-        for d in shown:
-            for t in snaps[d]["teams"]:
-                hist.append(dict(date=pd.Timestamp(d), team=t["name"], win=t["p_win"], exp=t["exp_weeks"], alive=True))
-        hdf = pd.DataFrame(hist)
-        metric = st.segmented_control("Trend", ["Win %", "Expected weeks"], default="Win %")
-        col = "win" if metric == "Win %" else "exp"
-        hdf["is_focus"] = hdf["team"] == focus
-        base = alt.Chart(hdf).encode(
-            x=alt.X("date:T", title=None, axis=alt.Axis(format="%b %d", grid=False)),
-            y=alt.Y(f"{col}:Q", title=None, axis=alt.Axis(format=".0%" if col == "win" else ".1f")),
-            detail="team:N",
-            tooltip=[alt.Tooltip("team:N", title="Team"), alt.Tooltip("date:T", format="%b %d"),
-                     alt.Tooltip(f"{col}:Q", format=".1%" if col == "win" else ".2f", title=metric)])
-        others = base.transform_filter("!datum.is_focus").mark_line(strokeWidth=1.5, color=GRAY, point=alt.OverlayMarkDef(size=30, color=GRAY))
-        me = base.transform_filter("datum.is_focus").mark_line(strokeWidth=2.5, color=BLUE, point=alt.OverlayMarkDef(size=70, color=BLUE))
-        st.markdown(f"**{metric} over time** — <span style='color:{BLUE}'>■</span> {focus} vs. the rest of the league",
-                    unsafe_allow_html=True)
-        st.altair_chart((others + me).properties(height=280), width="stretch")
+    st.caption("Week-by-week trends for every team are on the **Trends** tab.")
 
 # ----------------------------------------------------------------------------- chop watch
 with tab_chop:
@@ -322,6 +302,154 @@ with tab_team:
     st.altair_chart(chop_bar.properties(height=220), width="stretch")
     st.caption(f"Expected FAAB spend over the rest of the season in the simulations: ${T['exp_faab_spend']:.0f}.")
 
+# ----------------------------------------------------------------------------- trends
+with tab_trend:
+    wk_snap = {w: snaps[week_dates[w][-1]] for w in week_dates if w <= view_week}
+    if view_week in wk_snap:
+        wk_snap[view_week] = S
+    metric_t = st.segmented_control("Show", ["Win %", "Survive the week", "Expected weeks", "FAAB left"], default="Win %")
+    metric_t = metric_t or "Win %"
+    rows, last_seen = [], {}
+    for w, sn in sorted(wk_snap.items()):
+        for t in sn["teams"]:
+            surv = 1 - t["chop_dist"].get(str(w), 0.0)
+            rows.append(dict(rid=t["roster_id"], team=t["name"], week=w, win=t["p_win"], surv=surv,
+                             exp=t["exp_weeks"], faab=t["faab"]))
+            last_seen[t["roster_id"]] = (w, t["name"])
+    tdf = pd.DataFrame(rows)
+    col, fmt, ttl = {"Win %": ("win", ".0%", "Chance to win the league"),
+                     "Survive the week": ("surv", ".0%", "Chance to survive that week (from that week's view)"),
+                     "Expected weeks": ("exp", ".1f", "Expected weeks survived from that point"),
+                     "FAAB left": ("faab", "$,.0f", "FAAB remaining entering each week")}[metric_t]
+    st.subheader(ttl)
+    elim_wk = {e.get("roster_id"): e["week"] for e in snaps[dates[-1]]["eliminated"]}
+    elim_nm = {e["name"]: e["week"] for e in snaps[dates[-1]]["eliminated"]}
+    cur_rank = {t["roster_id"]: t["rank"] for t in S["teams"]}
+    order_ids = sorted(last_seen, key=lambda r: (0, cur_rank[r]) if r in cur_rank else (1, -last_seen[r][0]))
+    ymax = float(tdf[col].max()) if len(tdf) else 1
+    st.caption("One panel per team, same scale on every panel. Teams still alive first (by current rank), then chopped teams."
+               + (" Bars show FAAB left at the start of each week." if col == "faab" else ""))
+    ncol = 3
+    for i in range(0, len(order_ids), ncol):
+        cols = st.columns(ncol)
+        for c, rid in zip(cols, order_ids[i:i + ncol]):
+            d = tdf[tdf["rid"] == rid].sort_values("week")
+            name = last_seen[rid][1]
+            last = d.iloc[-1][col]
+            chopped = elim_wk.get(rid) or elim_nm.get(name)
+            shown_val = (f"${last:,.0f}" if col == "faab" else (f"{last:.0%}" if fmt == ".0%" else f"{last:.1f}"))
+            head = f"**{'⭐ ' if name == focus else ''}{name}** · {shown_val}"
+            if chopped and rid not in cur_rank:
+                head = f"**{name}** · 🪓 chopped Wk {chopped}"
+            with c:
+                st.markdown(head)
+                base = alt.Chart(d).encode(
+                    x=alt.X("week:O", title=None, axis=alt.Axis(labelAngle=0, labelExpr="'W' + datum.value")),
+                    tooltip=[alt.Tooltip("team:N", title="Team"), alt.Tooltip("week:O", title="Week"),
+                             alt.Tooltip(f"{col}:Q", format=fmt, title=metric_t)])
+                yax = alt.Y(f"{col}:Q", title=None, scale=alt.Scale(domain=[0, ymax * 1.15]),
+                            axis=alt.Axis(format=fmt, tickCount=3))
+                colr = BLUE if (rid in cur_rank) else GRAY
+                if col == "faab":
+                    ch = base.mark_bar(color=colr, cornerRadiusEnd=3, size=14).encode(y=yax)
+                else:
+                    ch = (base.mark_line(color=colr, strokeWidth=2.5).encode(y=yax)
+                          + base.mark_point(color=colr, filled=True, size=45).encode(y=yax))
+                lab = alt.Chart(d.tail(1)).mark_text(dy=-10, color=INK2, fontWeight="bold").encode(
+                    x="week:O", y=f"{col}:Q", text=alt.Text(f"{col}:Q", format=fmt))
+                st.altair_chart((ch + lab).properties(height=140), width="stretch")
+
+    if col == "faab" and len(wk_snap) > 1:
+        st.subheader("FAAB spent each week")
+        st.caption("Change in FAAB from one week's view to the next: waiver bids won plus FAAB sent (or received, shown as negative) in trades.")
+        piv = tdf.pivot_table(index="team", columns="week", values="faab", aggfunc="last")
+        spent = (-piv.diff(axis=1)).iloc[:, 1:]
+        spent.columns = [f"Wk {int(w) - 1}" for w in spent.columns]
+        spent["Total"] = spent.sum(axis=1, min_count=1)
+        spent = spent.sort_values("Total", ascending=False)
+        st.dataframe(spent.map(lambda v: "" if pd.isna(v) or v == 0 else f"${v:,.0f}"), width="stretch")
+
+# ----------------------------------------------------------------------------- big moves
+with tab_moves:
+    def move_rows(moves, wk_label):
+        out = []
+        for m in moves or []:
+            for tm in m["teams"]:
+                bits = []
+                if tm["got"]:
+                    bits.append("+" + ", ".join(tm["got"]))
+                if tm["gave"]:
+                    bits.append("−" + ", ".join(tm["gave"]))
+                if tm["faab"]:
+                    bits.append(f"{'+' if tm['faab'] > 0 else '−'}${abs(tm['faab'])}")
+                kind = {"waiver": "Waiver", "free_agent": "Free agent", "trade": "Trade"}.get(m["type"], m["type"])
+                out.append(dict(id=m["id"], week=wk_label, team=tm["name"], kind=kind, move=" ".join(bits),
+                                label=f"{tm['name']}: {(tm['got'] or tm['gave'] or ['FAAB'])[0]}",
+                                d_win=tm["d_win"] * 100, d_surv=tm["d_surv"] * 100, d_exp=tm["d_exp"],
+                                surv_week=m.get("surv_week"), focus=tm["name"] == focus))
+        return out
+
+    def impact_chart(df):
+        df = df.copy()
+        df["sign"] = df["d_win"].apply(lambda v: "Helped" if v >= 0 else "Hurt")
+        df = df.sort_values("d_win", ascending=False)
+        df["label"] = [f"{l}{' ' * i}" if l in list(df["label"])[:i] else l for i, l in enumerate(df["label"])]  # keep labels unique
+        yorder = list(df["label"])
+        lim = max(1.0, float(df["d_win"].abs().max()) * 1.25)
+        bars = alt.Chart(df).mark_bar(cornerRadiusEnd=4, height=16).encode(
+            y=alt.Y("label:N", sort=yorder, title=None, axis=alt.Axis(**NOLAP)),
+            x=alt.X("d_win:Q", title="Change in win % (points)", scale=alt.Scale(domain=[-lim, lim])),
+            color=alt.Color("sign:N", scale=alt.Scale(domain=["Helped", "Hurt"], range=[BLUE, "#e34948"]),
+                            legend=alt.Legend(orient="top", title=None)),
+            tooltip=[alt.Tooltip("team:N", title="Team"), alt.Tooltip("move:N", title="Move"), alt.Tooltip("kind:N", title="Type"),
+                     alt.Tooltip("d_win:Q", format="+.1f", title="Δ win % (pts)"),
+                     alt.Tooltip("d_surv:Q", format="+.1f", title="Δ survive (pts)"),
+                     alt.Tooltip("d_exp:Q", format="+.2f", title="Δ exp. weeks")])
+        enc = dict(y=alt.Y("label:N", sort=yorder),
+                   x=alt.X("d_win:Q"), text=alt.Text("d_win:Q", format="+.1f"))
+        pos = alt.Chart(df[df["d_win"] >= 0]).mark_text(color=INK2, fontSize=11, align="left", dx=4).encode(**enc)
+        neg = alt.Chart(df[df["d_win"] < 0]).mark_text(color=INK2, fontSize=11, align="right", dx=-4).encode(**enc)
+        return (bars + pos + neg).properties(height=alt.Step(30))
+
+    st.subheader(f"Biggest moves in Week {start}" if S.get("rebuilt") else "Biggest moves since the last chop")
+    st.caption("Each move is scored by re-running the season simulation with that one move undone (same random numbers), "
+               "so the change is what the move itself did: the player(s) and the FAAB spent or received. "
+               "Spending FAAB can lower a team's odds when the player adds little, because that money could have bought someone later.")
+    mv = move_rows(S.get("moves"), f"Wk {start}")
+    if not mv:
+        st.info("No move impacts in this snapshot yet. They're computed on each daily run from now on.")
+    else:
+        mdf = pd.DataFrame(mv)
+        mdf = mdf.reindex(mdf["d_win"].abs().sort_values(ascending=False).index)
+        st.altair_chart(impact_chart(mdf), width="stretch")
+        sw = mdf["surv_week"].dropna().iloc[0] if mdf["surv_week"].notna().any() else start
+        st.dataframe(mdf[["team", "kind", "move", "d_win", "d_surv", "d_exp"]].rename(columns={
+            "team": "Team", "kind": "Type", "move": "Move", "d_win": "Δ win %", "d_surv": f"Δ survive Wk {int(sw)}",
+            "d_exp": "Δ exp. weeks"}), hide_index=True, width="stretch", column_config={
+            "Δ win %": st.column_config.NumberColumn(format="%+.1f"),
+            f"Δ survive Wk {int(sw)}": st.column_config.NumberColumn(format="%+.1f"),
+            "Δ exp. weeks": st.column_config.NumberColumn(format="%+.2f")})
+
+    st.subheader("Season's most impactful moves")
+    season, seen = [], set()
+    for w in sorted(week_dates, reverse=True):
+        if w > view_week:
+            continue
+        for r in move_rows(snaps[week_dates[w][-1]].get("moves"), f"Wk {w}"):
+            if (r["id"], r["team"]) not in seen:
+                seen.add((r["id"], r["team"]))
+                season.append(r)
+    if season:
+        sdf = pd.DataFrame(season)
+        sdf = sdf.reindex(sdf["d_win"].abs().sort_values(ascending=False).index).head(15)
+        sdf["label"] = sdf["week"] + " · " + sdf["label"]
+        st.altair_chart(impact_chart(sdf), width="stretch")
+        st.dataframe(sdf[["week", "team", "kind", "move", "d_win", "d_exp"]].rename(columns={
+            "week": "Week", "team": "Team", "kind": "Type", "move": "Move", "d_win": "Δ win %", "d_exp": "Δ exp. weeks"}),
+            hide_index=True, width="stretch", column_config={
+                "Δ win %": st.column_config.NumberColumn(format="%+.1f"),
+                "Δ exp. weeks": st.column_config.NumberColumn(format="%+.2f")})
+
 # ----------------------------------------------------------------------------- waivers
 with tab_waiv:
     if S.get("pool_is_pending"):
@@ -381,11 +509,11 @@ with tab_chg:
     else:
         t0, t1 = as_of(B), as_of(S)
         pre_view = lambda x: not x.get("week_in_progress") and (x.get("rebuilt") or x.get("as_of_ms"))
-        during = (f" — i.e. moves made during Week {B['start_week']}"
+        during = (f"Moves for Week {S['start_week']}: waivers after Week {B['start_week']} plus every move through Week {S['start_week']} game day"
                   if S["start_week"] == B["start_week"] + 1 and pre_view(B) and S.get("rebuilt") else "")
         st.subheader(f"Between {snap_label(B)} and {snap_label(S)}")
         if during:
-            st.caption(during.strip(" —").capitalize() + ", from one pre-kickoff view to the next.")
+            st.caption(during + ".")
         gone = [t["name"] for t in B["teams"] if t["roster_id"] not in {x["roster_id"] for x in S["teams"]}]
         if gone:
             st.markdown("🪓 **Chopped:** " + ", ".join(gone))
@@ -451,7 +579,7 @@ with tab_track:
     st.subheader("How did the forecasts do?")
     st.caption("For each finished week: the model's chop odds before kickoff vs. who actually got chopped. "
                "**Live** = the first snapshot of that week taken before kickoff. **Rebuilt** = weeks before the app existed, "
-               "reconstructed from that week's rosters, Sleeper's projections for that week, and score spread fitted only on earlier weeks, so no look-ahead. "
+               "reconstructed from rosters as that week was played (game-day moves included), Sleeper's projections for that week, and score spread fitted only on earlier weeks. "
                "Weeks marked * only had mid-week snapshots, so part of the result was already known.")
     bf_path = os.path.join(os.path.dirname(SNAP_DIR.rstrip("/")), "history", "backfill.json")
     rebuilt = {}

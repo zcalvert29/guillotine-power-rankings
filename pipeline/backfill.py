@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from pipeline.model import DEFAULT_SD, SKILL, Engine, _team_name, build_context, simulate, summarize
+from pipeline.model import DEFAULT_SD, SKILL, Engine, _team_name, build_context, move_impacts, simulate, summarize
 from pipeline.sleeper import DirSource, LiveSource
 
 DEFAULT_LEAGUE = "1389750406673883136"
@@ -53,7 +53,8 @@ def main():
     ap.add_argument("--dir")
     ap.add_argument("--out", default=os.path.join(ROOT, "history", "backfill.json"))
     ap.add_argument("--snap-dir", default=os.path.join(ROOT, "snapshots"))
-    ap.add_argument("--sims", type=int, default=int(os.environ.get("N_SIMS_REBUILD", 4000)))
+    ap.add_argument("--sims", type=int, default=int(os.environ.get("N_SIMS_REBUILD", 3000)))
+    ap.add_argument("--impact-sims", type=int, default=int(os.environ.get("N_IMPACT_SIMS", 1000)))
     ap.add_argument("--no-snapshots", action="store_true", help="only grade, don't rebuild full weekly snapshots")
     ap.add_argument("--force", action="store_true", help="rebuild snapshots even if one exists for that week")
     a = ap.parse_args()
@@ -154,11 +155,14 @@ def rebuild_snapshots(src, a):
         res = simulate(ctx, nsim=a.sims, seed=2026)
         snap = summarize(ctx, res, generated_at=f"{label}T23:59-05:00")
         snap["snapshot_date"] = label
+        snap["moves"] = move_impacts(ctx, ctx["prev_cutoff_ms"], ctx["as_of_ms"], nsim=a.impact_sims, top=6)
         path = os.path.join(a.snap_dir, f"{label}.json")
         with open(path, "w") as fh:
             json.dump(snap, fh, separators=(",", ":"))
         top = snap["teams"][0]
-        print(f"rebuilt Week {W} -> {path}: {len(ctx['alive'])} alive, #1 {top['name']} ({top['p_win']:.0%} win)")
+        big = max(snap["moves"], key=lambda m: max(abs(x["d_win"]) for x in m["teams"]), default=None)
+        print(f"rebuilt Week {W} -> {path}: {len(ctx['alive'])} alive, #1 {top['name']} ({top['p_win']:.0%} win); "
+              f"{len(snap['moves'])} moves scored" + (f", biggest: {big['teams'][0]['name']} {big['teams'][0]['got']} {big['teams'][0]['d_win']:+.1%}" if big else ""))
 
 
 if __name__ == "__main__":
