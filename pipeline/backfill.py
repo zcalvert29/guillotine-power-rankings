@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from pipeline.model import DEFAULT_SD, SKILL, Engine, _team_name
+from pipeline.model import DEFAULT_SD, SKILL, Engine, _team_name, build_context, simulate, summarize
 from pipeline.sleeper import DirSource, LiveSource
 
 DEFAULT_LEAGUE = "1389750406673883136"
@@ -52,6 +52,10 @@ def main():
     ap.add_argument("--league", default=os.environ.get("LEAGUE_ID", DEFAULT_LEAGUE))
     ap.add_argument("--dir")
     ap.add_argument("--out", default=os.path.join(ROOT, "history", "backfill.json"))
+    ap.add_argument("--snap-dir", default=os.path.join(ROOT, "snapshots"))
+    ap.add_argument("--sims", type=int, default=int(os.environ.get("N_SIMS_REBUILD", 4000)))
+    ap.add_argument("--no-snapshots", action="store_true", help="only grade, don't rebuild full weekly snapshots")
+    ap.add_argument("--force", action="store_true", help="rebuild snapshots even if one exists for that week")
     a = ap.parse_args()
     src = DirSource(a.dir) if a.dir else LiveSource(a.league)
 
@@ -118,6 +122,43 @@ def main():
         json.dump(dict(generated_at=dt.datetime.now(ZoneInfo("America/Chicago")).isoformat(timespec="minutes"),
                        season=season, draws=DRAWS, weeks=out_weeks), fh, separators=(",", ":"))
     print(f"wrote {a.out}: {len(out_weeks)} weeks")
+    if not a.no_snapshots:
+        rebuild_snapshots(src, a)
+
+
+def rebuild_snapshots(src, a):
+    """Full pre-kickoff snapshot (rankings, FAAB, waivers...) for each week that has started but has no pre-kickoff snapshot."""
+    league = src.league()
+    season = str(league["season"])
+    schedule = src.schedule(season) or []
+    first_day = {}
+    for g in schedule:
+        first_day[g["week"]] = min(first_day.get(g["week"], g["date"]), g["date"])
+    today = dt.datetime.now(ZoneInfo("America/Chicago")).date().isoformat()
+    existing = {}
+    os.makedirs(a.snap_dir, exist_ok=True)
+    for f in os.listdir(a.snap_dir):
+        if f.endswith(".json"):
+            with open(os.path.join(a.snap_dir, f)) as fh:
+                s = json.load(fh)
+            if not s.get("week_in_progress"):
+                existing[s["start_week"]] = f
+    live_start = build_context(src)["start"]
+    for W in sorted(w for w in first_day if w <= live_start and first_day[w] <= today):
+        if W in existing and not a.force:
+            continue
+        ctx = build_context(src, as_of_week=W)
+        if len(ctx["alive"]) <= 1:
+            continue
+        label = (dt.date.fromisoformat(first_day[W]) - dt.timedelta(days=1)).isoformat()
+        res = simulate(ctx, nsim=a.sims, seed=2026)
+        snap = summarize(ctx, res, generated_at=f"{label}T23:59-05:00")
+        snap["snapshot_date"] = label
+        path = os.path.join(a.snap_dir, f"{label}.json")
+        with open(path, "w") as fh:
+            json.dump(snap, fh, separators=(",", ":"))
+        top = snap["teams"][0]
+        print(f"rebuilt Week {W} -> {path}: {len(ctx['alive'])} alive, #1 {top['name']} ({top['p_win']:.0%} win)")
 
 
 if __name__ == "__main__":

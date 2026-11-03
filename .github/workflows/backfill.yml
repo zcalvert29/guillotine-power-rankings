@@ -13,7 +13,7 @@ concurrency:
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,7 +28,7 @@ jobs:
         run: |
           git config user.name "guillotine-bot"
           git config user.email "guillotine-bot@users.noreply.github.com"
-          git add history/
+          git add history/ snapshots/
           git diff --cached --quiet || git commit -m "Rebuild track record"
           git pull --rebase origin main
           git push

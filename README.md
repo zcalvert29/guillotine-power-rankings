@@ -3,7 +3,7 @@
 A Streamlit app with forward-looking power rankings for the Sleeper Guillotine league. Every morning a GitHub Action pulls the league, plays out the rest of the season 10,000 times (weekly chops plus FAAB auctions for each chopped roster) and saves a dated snapshot. The app reads those snapshots, so it shows how rosters and odds change from day to day.
 
 ## What's in the app
-- **Week picker:** the sidebar defaults to the current week's latest snapshot; pick any earlier week (or a specific day inside it) to see the rankings as they stood then.
+- **Week picker:** the sidebar defaults to the current week's latest snapshot; pick any earlier week (or a specific day inside it) to see the rankings as they stood then. Weeks before the app existed (or any week the daily job missed before kickoff) are rebuilt automatically as they stood just before kickoff.
 - **Power rankings:** chance of surviving the next week, chance of being alive in 3 weeks, expected weeks survived (the ranking stat), win %, FAAB left and a change column, plus a win % trend chart.
 - **Chop watch:** this week's and next week's chop odds, live scores during game days, and a danger-by-week heatmap.
 - **Team:** projected lineup by week against the league median and low, the roster with weekly projections and byes, and when the team is likely to be chopped.

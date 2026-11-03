@@ -8,7 +8,9 @@ Each simulated season, week by week:
 Repeat until one team is left. Rankings come from thousands of simulated seasons.
 """
 import collections
+import datetime as dt
 import math
+from zoneinfo import ZoneInfo
 import multiprocessing as mp
 import random
 
@@ -43,7 +45,8 @@ def _team_name(u):
     return md.get("team_name") or u.get("display_name")
 
 
-def build_context(src):
+def build_context(src, as_of_week=None):
+    """as_of_week=W rebuilds the league as it stood just before Week W's first kickoff (for history)."""
     league, state = src.league(), src.state()
     season = str(league["season"])
     cur = int(state.get("week") or state.get("display_week") or 1)
@@ -72,15 +75,27 @@ def build_context(src):
     last_waiver_run = max([t.get("status_updated") or 0 for t in tx
                            if t.get("type") == "waiver" and t.get("status") == "complete"] or [0])
 
-    alive = [r["roster_id"] for r in rosters if not (r.get("settings") or {}).get("eliminated")]
-    start = cur + 1 if cur in chopped_legs else cur
-    final = start + len(alive) - 2
-
     schedule = src.schedule(season) or []
     games = collections.defaultdict(dict)  # week -> team -> status
     for g in schedule:
         for side in ("home", "away"):
             games[g["week"]][g[side]] = g.get("status")
+
+    alive = [r["roster_id"] for r in rosters if not (r.get("settings") or {}).get("eliminated")]
+    start = cur + 1 if cur in chopped_legs else cur
+    kickoff_ms = None
+    if as_of_week:
+        W = int(as_of_week)
+        first_day = min(g["date"] for g in schedule if g["week"] == W)
+        kickoff_ms = int(dt.datetime.fromisoformat(first_day).replace(hour=12, tzinfo=ZoneInfo("America/Chicago")).timestamp() * 1000)  # waivers run overnight; first game is in the evening
+        tx = [t for t in tx if (t.get("status_updated") or t.get("created") or 0) < kickoff_ms]
+        chops = [c for c in chops if c[0] < W]
+        gone = {c[1] for c in chops}
+        alive = [r["roster_id"] for r in rosters if r["roster_id"] not in gone]
+        last_waiver_run = max([t.get("status_updated") or 0 for t in tx
+                               if t.get("type") == "waiver" and t.get("status") == "complete"] or [0])
+        start = cur = W
+    final = start + len(alive) - 2
     nfl_teams = {t for w in games for t in games[w]}
     byes = {t: [w for w in range(1, 19) if t not in games.get(w, {})] for t in nfl_teams}
 
@@ -115,6 +130,20 @@ def build_context(src):
     reserve = {rid: set(rmap[rid].get("reserve") or []) for rid in rmap}
     faab_budget = int((league.get("settings") or {}).get("waiver_budget") or 100)
     faab = {rid: faab_budget - int((rmap[rid].get("settings") or {}).get("waiver_budget_used") or 0) for rid in rmap}
+    if as_of_week:
+        # rosters as played that week; FAAB from moves processed before kickoff
+        wk = {m["roster_id"]: m for m in (src.matchups(start) or [])}
+        roster_players = {rid: [p for p in ((wk.get(rid) or {}).get("players") or []) if p in P] for rid in rmap}
+        reserve = {rid: set() for rid in rmap}
+        faab = {rid: faab_budget for rid in rmap}
+        for t in tx:
+            if t.get("status") != "complete":
+                continue
+            if t.get("type") == "waiver":
+                for rid in t.get("roster_ids") or []:
+                    faab[rid] -= int((t.get("settings") or {}).get("waiver_bid") or 0)
+            for b in t.get("waiver_budget") or []:
+                faab[b["sender"]] -= b["amount"]; faab[b["receiver"]] += b["amount"]
 
     on_alive = {p for rid in alive for p in roster_players[rid]}
     pending = []
@@ -136,7 +165,7 @@ def build_context(src):
     # current-week live scoring
     live = None
     wk_status = games.get(start, {})
-    started = any(s and s != "pre_game" for s in wk_status.values())
+    started = (not as_of_week) and any(s and s != "pre_game" for s in wk_status.values())
     if started:
         mu = {x["roster_id"]: x for x in (src.matchups(start) or [])}
         live = {}
@@ -167,7 +196,7 @@ def build_context(src):
         names={rid: _team_name(users.get(rmap[rid]["owner_id"], {})) if rmap[rid].get("owner_id") else f"Team {rid}" for rid in rmap},
         usernames={rid: (users.get(rmap[rid]["owner_id"], {}) or {}).get("display_name") for rid in rmap},
         eliminated=[dict(week=c[0], roster_id=c[1]) for c in chops],
-        pending=pending, pending_from=pending_from, live=live, tx=tx,
+        pending=pending, pending_from=pending_from, live=live, tx=tx, rebuilt=bool(as_of_week),
     )
 
 
@@ -410,7 +439,7 @@ def summarize(ctx, res, generated_at):
     return dict(
         generated_at=generated_at, league_name=ctx["league_name"], season=ctx["season"],
         current_week=ctx["current_week"], start_week=start, final_week=final, n_sims=N,
-        week_in_progress=bool(ctx["live"]), params=ctx["params"], sd_fit=ctx["sd_fit"],
+        week_in_progress=bool(ctx["live"]), rebuilt=ctx.get("rebuilt", False), params=ctx["params"], sd_fit=ctx["sd_fit"],
         faab_budget=ctx["faab_budget"], teams=teams,
         eliminated=[dict(week=e["week"], roster_id=e["roster_id"], name=names[e["roster_id"]]) for e in ctx["eliminated"]],
         pending_from=(dict(week=ctx["pending_from"]["week"], name=names[ctx["pending_from"]["roster_id"]])

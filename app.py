@@ -58,7 +58,9 @@ with st.sidebar:
     wk_days = week_dates[view_week][::-1]
     with st.expander("As of a specific day", expanded=False):
         view_date = st.selectbox("Day", wk_days, index=0,
-                                 format_func=lambda d: dt.date.fromisoformat(d).strftime("%a %b %d") + (" (latest)" if d == wk_days[0] else ""))
+                                 format_func=lambda d: dt.date.fromisoformat(d).strftime("%a %b %d")
+                                 + (" · rebuilt, pre-kickoff" if snaps[d].get("rebuilt") else "")
+                                 + (" (latest)" if d == wk_days[0] else ""))
     S = snaps[view_date]
     earlier = [d for d in dates if d < view_date]
     base_opts = {}
@@ -75,7 +77,10 @@ with st.sidebar:
     team_names = [t["name"] for t in S["teams"]]
     mine = next((t["name"] for t in S["teams"] if t.get("username") == MY_USERNAME), team_names[0])
     focus = st.selectbox("Highlight team", team_names, index=team_names.index(mine))
-    st.caption(f"Snapshot built {S['generated_at'].replace('T', ' ')} CT from {S['n_sims']:,} simulated seasons.")
+    if S.get("rebuilt"):
+        st.caption(f"Rebuilt as of just before Week {S['start_week']} kickoff, from {S['n_sims']:,} simulated seasons.")
+    else:
+        st.caption(f"Snapshot built {S['generated_at'].replace('T', ' ')} CT from {S['n_sims']:,} simulated seasons.")
 
 teams = {t["name"]: t for t in S["teams"]}
 bteams = {t["roster_id"]: t for t in (B or {}).get("teams", [])}
@@ -115,6 +120,10 @@ status = (f"Week {start} in progress" if S["week_in_progress"] else f"Week {star
 st.markdown(f"**{status}** · {len(S['teams'])} teams alive · season ends Week {final}"
             + (f" · Δ vs {base_label.lower()}" if B else ""))
 latest_elim = {e["week"]: e for e in snaps[dates[-1]]["eliminated"]}
+if S.get("rebuilt"):
+    st.caption(f"🔁 Rebuilt view: the league as it stood just before Week {start} kicked off (rosters, FAAB and that week's projections). "
+               "Odds for later weeks use Sleeper's projections as they stand now, so long-range numbers carry some hindsight; "
+               f"the Week {start} chop odds don't.")
 if view_week != current_week and view_week in latest_elim:
     e = latest_elim[view_week]
     p_out = next((t["chop_dist"].get(str(view_week), 0) for t in S["teams"]
@@ -405,7 +414,8 @@ with tab_track:
     for w in sorted(latest_elim):
         e = latest_elim[w]
         wd = week_dates.get(w, [])
-        pre = [d for d in wd if not snaps[d]["week_in_progress"]]
+        pre_live = [d for d in wd if not snaps[d]["week_in_progress"] and not snaps[d].get("rebuilt")]
+        pre = pre_live or [d for d in wd if not snaps[d]["week_in_progress"]]
         rec = None
         if pre or (wd and w not in rebuilt):
             d0 = pre[0] if pre else wd[0]
@@ -415,7 +425,8 @@ with tab_track:
             out = e.get("roster_id") if e.get("roster_id") in probs else next((r for r, n in nm.items() if n == e["name"]), None)
             if out is not None:
                 rec = grade(w, probs, nm, out, f"Wk {w}" + ("" if pre else "*"),
-                            "Live" if pre else "Live (mid-week)", dt.date.fromisoformat(d0).strftime("%b %d"))
+                            ("Rebuilt" if snaps[d0].get("rebuilt") else "Live") if pre else "Live (mid-week)",
+                            dt.date.fromisoformat(d0).strftime("%b %d"))
         if rec is None and w in rebuilt:
             R = rebuilt[w]
             probs = {t["roster_id"]: t["p_chop"] for t in R["teams"]}
