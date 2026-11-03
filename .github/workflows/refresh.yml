@@ -27,10 +27,14 @@ jobs:
           LEAGUE_ID: ${{ vars.LEAGUE_ID || '1389750406673883136' }}
           N_SIMS: ${{ vars.N_SIMS || '10000' }}
         run: python -m pipeline.run
+      - name: Grade finished weeks
+        env:
+          LEAGUE_ID: ${{ vars.LEAGUE_ID || '1389750406673883136' }}
+        run: python -m pipeline.backfill
       - name: Commit snapshot
         run: |
           git config user.name "guillotine-bot"
           git config user.email "guillotine-bot@users.noreply.github.com"
-          git add snapshots/
+          git add snapshots/ history/
           git diff --cached --quiet || git commit -m "Snapshot $(TZ=America/Chicago date +%F)"
           git push

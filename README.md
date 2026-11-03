@@ -9,7 +9,7 @@ A Streamlit app with forward-looking power rankings for the Sleeper Guillotine l
 - **Team:** projected lineup by week against the league median and low, the roster with weekly projections and byes, and when the team is likely to be chopped.
 - **Waivers:** who most likely lands each player off the chopped roster and the median winning bid, plus recent moves (waivers with bids, free agents, trades and FAAB trades).
 - **What changed:** adds, drops, FAAB spent and the change in odds for each team since any earlier snapshot.
-- **Track record:** each finished week's pre-kickoff chop odds vs. who actually got chopped, with hit rate and a skill score vs. random guessing.
+- **Track record:** each finished week's pre-kickoff chop odds vs. who actually got chopped, with hit rate and a skill score vs. random guessing. Weeks before the app existed are rebuilt by `pipeline/backfill.py` (that week's rosters + that week's projections, no look-ahead); the daily job re-grades finished weeks automatically.
 
 ## Setup (about 10 minutes, one time)
 1. **Create a GitHub repo** (private is fine) and upload this folder's contents, including `.github/` and `snapshots/`.

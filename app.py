@@ -381,30 +381,49 @@ with tab_chg:
 # ----------------------------------------------------------------------------- track record
 with tab_track:
     st.subheader("How did the forecasts do?")
-    st.caption("For each finished week: the chop odds from the first snapshot of that week taken before kickoff, "
-               "against who actually got chopped. Weeks with only mid-week snapshots are flagged, since part of the result was already known.")
-    recs = []
-    for w in sorted(week_dates):
-        if w not in latest_elim:
-            continue
-        wd = week_dates[w]
-        pre = [d for d in wd if not snaps[d]["week_in_progress"]]
-        d0 = pre[0] if pre else wd[0]
-        F = snaps[d0]
-        probs = {t["roster_id"]: t["chop_dist"].get(str(w), 0.0) for t in F["teams"]}
-        nm = {t["roster_id"]: t["name"] for t in F["teams"]}
-        e = latest_elim[w]
-        out = e.get("roster_id") if e.get("roster_id") in probs else next((r for r, n in nm.items() if n == e["name"]), None)
-        if out is None:
-            continue
+    st.caption("For each finished week: the model's chop odds before kickoff vs. who actually got chopped. "
+               "**Live** = the first snapshot of that week taken before kickoff. **Rebuilt** = weeks before the app existed, "
+               "reconstructed from that week's rosters, Sleeper's projections for that week, and score spread fitted only on earlier weeks, so no look-ahead. "
+               "Weeks marked * only had mid-week snapshots, so part of the result was already known.")
+    bf_path = os.path.join(os.path.dirname(SNAP_DIR.rstrip("/")), "history", "backfill.json")
+    rebuilt = {}
+    if os.path.exists(bf_path):
+        with open(bf_path) as fh:
+            rebuilt = {x["week"]: x for x in json.load(fh)["weeks"]}
+
+    def grade(w, probs, nm, out, label, source, forecast):
         p = probs[out]
         n = len(probs)
         fav = max(probs, key=probs.get)
-        recs.append(dict(
-            week=w, label=f"Wk {w}" + ("" if pre else "*"), clean=bool(pre), forecast=d0, chopped=e["name"], p=p,
-            rank=1 + sum(1 for v in probs.values() if v > p), n=n, fav=nm[fav], fav_p=probs[fav], base=1 / n,
-            brier=sum((v - (1.0 if r == out else 0.0)) ** 2 for r, v in probs.items()),
-            brier_base=(1 - 1 / n) ** 2 + (n - 1) * (1 / n) ** 2))
+        return dict(week=w, label=label, clean=not label.endswith("*"), source=source, forecast=forecast,
+                    chopped=nm[out], p=p, rank=1 + sum(1 for v in probs.values() if v > p), n=n,
+                    fav=nm[fav], fav_p=probs[fav], base=1 / n,
+                    brier=sum((v - (1.0 if r == out else 0.0)) ** 2 for r, v in probs.items()),
+                    brier_base=(1 - 1 / n) ** 2 + (n - 1) * (1 / n) ** 2)
+
+    recs = []
+    for w in sorted(latest_elim):
+        e = latest_elim[w]
+        wd = week_dates.get(w, [])
+        pre = [d for d in wd if not snaps[d]["week_in_progress"]]
+        rec = None
+        if pre or (wd and w not in rebuilt):
+            d0 = pre[0] if pre else wd[0]
+            F = snaps[d0]
+            probs = {t["roster_id"]: t["chop_dist"].get(str(w), 0.0) for t in F["teams"]}
+            nm = {t["roster_id"]: t["name"] for t in F["teams"]}
+            out = e.get("roster_id") if e.get("roster_id") in probs else next((r for r, n in nm.items() if n == e["name"]), None)
+            if out is not None:
+                rec = grade(w, probs, nm, out, f"Wk {w}" + ("" if pre else "*"),
+                            "Live" if pre else "Live (mid-week)", dt.date.fromisoformat(d0).strftime("%b %d"))
+        if rec is None and w in rebuilt:
+            R = rebuilt[w]
+            probs = {t["roster_id"]: t["p_chop"] for t in R["teams"]}
+            nm = {t["roster_id"]: t["name"] for t in R["teams"]}
+            if R["chopped_roster_id"] in probs:
+                rec = grade(w, probs, nm, R["chopped_roster_id"], f"Wk {w}", "Rebuilt", "pre-kickoff")
+        if rec:
+            recs.append(rec)
     if not recs:
         st.info("Nothing to grade yet. Each week's forecast is scored once that week's chop happens, so this fills in as the season goes. "
                 "The first fully clean grade is the first week that has a snapshot from before kickoff.")
@@ -425,10 +444,10 @@ with tab_track:
         bars = alt.Chart(rd).mark_bar(cornerRadiusEnd=4, size=28, color=BLUE).encode(
             x=alt.X("label:N", sort=alt.SortField("week"), title=None, axis=alt.Axis(labelAngle=0)),
             y=alt.Y("p:Q", title="Odds given to chopped team", axis=alt.Axis(format=".0%"),
-                    scale=alt.Scale(domain=[0, 1])),
+                    scale=alt.Scale(domain=[0, max(0.4, float(rd["p"].max()))])),
             tooltip=[alt.Tooltip("label:N", title="Week"), alt.Tooltip("chopped:N", title="Chopped"),
                      alt.Tooltip("p:Q", format=".1%", title="Model odds"), alt.Tooltip("rank:Q", title="Model rank"),
-                     alt.Tooltip("fav:N", title="Model's top pick"), alt.Tooltip("forecast:N", title="Forecast from")])
+                     alt.Tooltip("fav:N", title="Model's top pick"), alt.Tooltip("source:N", title="Source")])
         base_tick = alt.Chart(rd).mark_tick(color=INK2, thickness=2, size=34).encode(
             x=alt.X("label:N", sort=alt.SortField("week")), y="base:Q",
             tooltip=[alt.Tooltip("base:Q", format=".1%", title="Random-guess odds")])
@@ -438,9 +457,9 @@ with tab_track:
             p=lambda x: (x["p"] * 100).round(0).astype(int).astype(str) + "%",
             fav_p=lambda x: (x["fav_p"] * 100).round(0).astype(int).astype(str) + "%",
             rank=lambda x: x["rank"].astype(str) + " of " + x["n"].astype(str))[
-            ["label", "chopped", "p", "rank", "fav", "fav_p", "forecast"]].rename(columns={
+            ["label", "chopped", "p", "rank", "fav", "fav_p", "source"]].rename(columns={
                 "label": "Week", "chopped": "Chopped", "p": "Model odds", "rank": "Model rank",
-                "fav": "Model's top pick", "fav_p": "Top pick odds", "forecast": "Forecast from"}),
+                "fav": "Model's top pick", "fav_p": "Top pick odds", "source": "Source"}),
             hide_index=True, width="stretch")
 
 # ----------------------------------------------------------------------------- method
