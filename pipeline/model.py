@@ -412,7 +412,7 @@ def summarize(ctx, res, generated_at):
         current_week=ctx["current_week"], start_week=start, final_week=final, n_sims=N,
         week_in_progress=bool(ctx["live"]), params=ctx["params"], sd_fit=ctx["sd_fit"],
         faab_budget=ctx["faab_budget"], teams=teams,
-        eliminated=[dict(week=e["week"], name=names[e["roster_id"]]) for e in ctx["eliminated"]],
+        eliminated=[dict(week=e["week"], roster_id=e["roster_id"], name=names[e["roster_id"]]) for e in ctx["eliminated"]],
         pending_from=(dict(week=ctx["pending_from"]["week"], name=names[ctx["pending_from"]["roster_id"]])
                       if ctx["pending_from"] else None),
         waiver_pool=pool, pool_is_pending=bool(ctx["pending"]), transactions=recent,

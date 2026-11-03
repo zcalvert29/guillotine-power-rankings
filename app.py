@@ -42,24 +42,35 @@ if not snaps:
     st.stop()
 
 dates = sorted(snaps)
+week_dates = {}
+for d in dates:
+    week_dates.setdefault(snaps[d]["start_week"], []).append(d)
+week_list = sorted(week_dates, reverse=True)
+current_week = snaps[dates[-1]]["start_week"]
 
 # ----------------------------------------------------------------------------- sidebar
 with st.sidebar:
-    st.header("Settings")
-    view_date = st.selectbox("Snapshot", dates[::-1], index=0, help="Look at the rankings as of any past day.")
+    st.header("View")
+    view_week = st.selectbox(
+        "Week", week_list, index=0,
+        format_func=lambda w: f"Week {w}" + (" (current)" if w == current_week else ""),
+        help="Rankings as they stood during any week. Defaults to the latest.")
+    wk_days = week_dates[view_week][::-1]
+    with st.expander("As of a specific day", expanded=False):
+        view_date = st.selectbox("Day", wk_days, index=0,
+                                 format_func=lambda d: dt.date.fromisoformat(d).strftime("%a %b %d") + (" (latest)" if d == wk_days[0] else ""))
     S = snaps[view_date]
     earlier = [d for d in dates if d < view_date]
     base_opts = {}
+    prev_weeks = [w for w in week_list if w < view_week]
+    if prev_weeks:
+        base_opts[f"End of Week {prev_weeks[0]}"] = week_dates[prev_weeks[0]][-1]
     if earlier:
-        base_opts["Previous snapshot"] = earlier[-1]
-        wk_ago = (dt.date.fromisoformat(view_date) - dt.timedelta(days=7)).isoformat()
-        older = [d for d in earlier if d <= wk_ago]
-        if older:
-            base_opts["~1 week ago"] = older[-1]
-        same_week_start = [d for d in earlier if snaps[d]["start_week"] < S["start_week"]]
-        if same_week_start:
-            base_opts["Before last chop"] = same_week_start[-1]
-    base_label = st.radio("Compare against", list(base_opts) or ["(no earlier snapshot)"], index=0)
+        base_opts["Previous day"] = earlier[-1]
+    week_start = week_dates[view_week][0]
+    if week_start < view_date:
+        base_opts[f"Start of Week {view_week}"] = week_start
+    base_label = st.radio("Compare against", list(base_opts) or ["(nothing earlier yet)"], index=0)
     B = snaps.get(base_opts.get(base_label)) if base_opts else None
     team_names = [t["name"] for t in S["teams"]]
     mine = next((t["name"] for t in S["teams"] if t.get("username") == MY_USERNAME), team_names[0])
@@ -102,13 +113,21 @@ def fmt_delta(x, unit="", digits=1):
 st.title(f"🪓 {S['league_name'].strip()}")
 status = (f"Week {start} in progress" if S["week_in_progress"] else f"Week {start} up next")
 st.markdown(f"**{status}** · {len(S['teams'])} teams alive · season ends Week {final}"
-            + (f" · compared with {base_opts[base_label]}" if B else ""))
-if S.get("pool_is_pending") and S.get("pending_from"):
+            + (f" · Δ vs {base_label.lower()}" if B else ""))
+latest_elim = {e["week"]: e for e in snaps[dates[-1]]["eliminated"]}
+if view_week != current_week and view_week in latest_elim:
+    e = latest_elim[view_week]
+    p_out = next((t["chop_dist"].get(str(view_week), 0) for t in S["teams"]
+                  if t["roster_id"] == e.get("roster_id") or t["name"] == e["name"]), None)
+    st.warning(f"Looking back at Week {view_week} as of {dt.date.fromisoformat(view_date).strftime('%b %d')}. "
+               f"**{e['name']}** was chopped that week" + (f" (this view gave them {p_out:.0%})." if p_out is not None else ".")
+               + " See **Track record** for every week.")
+elif S.get("pool_is_pending") and S.get("pending_from"):
     st.info(f"{S['pending_from']['name']}'s roster (chopped Week {S['pending_from']['week']}) is on waivers. "
             f"See **Waivers** for who's likely to land each player.")
 
-tab_rank, tab_chop, tab_team, tab_waiv, tab_chg, tab_about = st.tabs(
-    ["Power rankings", "Chop watch", "Team", "Waivers", "What changed", "Method"])
+tab_rank, tab_chop, tab_team, tab_waiv, tab_chg, tab_track, tab_about = st.tabs(
+    ["Power rankings", "Chop watch", "Team", "Waivers", "What changed", "Track record", "Method"])
 
 # ----------------------------------------------------------------------------- rankings
 with tab_rank:
@@ -151,9 +170,10 @@ with tab_rank:
     st.caption("Ranked by expected weeks survived. Δ = percentage-point change vs the comparison snapshot."
                + (f" Week {start}'s chop is all but decided, so survival columns look ahead to Week {fw}." if fw != start else ""))
 
-    if len(dates) > 1:
+    shown = [d for d in dates if d <= view_date]
+    if len(shown) > 1:
         hist = []
-        for d in dates:
+        for d in shown:
             for t in snaps[d]["teams"]:
                 hist.append(dict(date=pd.Timestamp(d), team=t["name"], win=t["p_win"], exp=t["exp_weeks"], alive=True))
         hdf = pd.DataFrame(hist)
@@ -328,7 +348,7 @@ with tab_chg:
     if not B:
         st.info("Changes appear once there are at least two daily snapshots.")
     else:
-        st.subheader(f"Since {base_opts[base_label]}")
+        st.subheader(f"Since {base_label.lower()} ({dt.date.fromisoformat(base_opts[base_label]).strftime('%a %b %d')})")
         gone = [t["name"] for t in B["teams"] if t["roster_id"] not in {x["roster_id"] for x in S["teams"]}]
         if gone:
             st.markdown("🪓 **Chopped:** " + ", ".join(gone))
@@ -357,6 +377,71 @@ with tab_chg:
             "FAAB spent": st.column_config.NumberColumn(format="$%d")})
         st.caption("Probability changes come from roster moves, projection/injury updates and results. Every run reuses the same "
                    "random seed, so simulation noise mostly cancels out between days.")
+
+# ----------------------------------------------------------------------------- track record
+with tab_track:
+    st.subheader("How did the forecasts do?")
+    st.caption("For each finished week: the chop odds from the first snapshot of that week taken before kickoff, "
+               "against who actually got chopped. Weeks with only mid-week snapshots are flagged, since part of the result was already known.")
+    recs = []
+    for w in sorted(week_dates):
+        if w not in latest_elim:
+            continue
+        wd = week_dates[w]
+        pre = [d for d in wd if not snaps[d]["week_in_progress"]]
+        d0 = pre[0] if pre else wd[0]
+        F = snaps[d0]
+        probs = {t["roster_id"]: t["chop_dist"].get(str(w), 0.0) for t in F["teams"]}
+        nm = {t["roster_id"]: t["name"] for t in F["teams"]}
+        e = latest_elim[w]
+        out = e.get("roster_id") if e.get("roster_id") in probs else next((r for r, n in nm.items() if n == e["name"]), None)
+        if out is None:
+            continue
+        p = probs[out]
+        n = len(probs)
+        fav = max(probs, key=probs.get)
+        recs.append(dict(
+            week=w, label=f"Wk {w}" + ("" if pre else "*"), clean=bool(pre), forecast=d0, chopped=e["name"], p=p,
+            rank=1 + sum(1 for v in probs.values() if v > p), n=n, fav=nm[fav], fav_p=probs[fav], base=1 / n,
+            brier=sum((v - (1.0 if r == out else 0.0)) ** 2 for r, v in probs.items()),
+            brier_base=(1 - 1 / n) ** 2 + (n - 1) * (1 / n) ** 2))
+    if not recs:
+        st.info("Nothing to grade yet. Each week's forecast is scored once that week's chop happens, so this fills in as the season goes. "
+                "The first fully clean grade is the first week that has a snapshot from before kickoff.")
+    else:
+        rd = pd.DataFrame(recs)
+        clean = rd[rd["clean"]]
+        g = clean if len(clean) else rd
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Chopped team was the model's #1 pick", f"{int((g['rank'] == 1).sum())} of {len(g)}")
+        m2.metric("Avg. chop odds given to the chopped team", f"{g['p'].mean():.0%}",
+                  help="Higher is better. Compare with picking at random (next to it).")
+        m2.caption(f"Random guess: {g['base'].mean():.0%}")
+        skill = 1 - g["brier"].sum() / g["brier_base"].sum()
+        m3.metric("Skill vs. random guessing", f"{skill:+.0%}",
+                  help="Brier skill score: 0% = no better than giving every team equal odds; 100% = perfect.")
+        if not len(clean):
+            st.caption("All graded weeks so far only have mid-week snapshots (*), so these numbers are optimistic.")
+        bars = alt.Chart(rd).mark_bar(cornerRadiusEnd=4, size=28, color=BLUE).encode(
+            x=alt.X("label:N", sort=alt.SortField("week"), title=None, axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("p:Q", title="Odds given to chopped team", axis=alt.Axis(format=".0%"),
+                    scale=alt.Scale(domain=[0, 1])),
+            tooltip=[alt.Tooltip("label:N", title="Week"), alt.Tooltip("chopped:N", title="Chopped"),
+                     alt.Tooltip("p:Q", format=".1%", title="Model odds"), alt.Tooltip("rank:Q", title="Model rank"),
+                     alt.Tooltip("fav:N", title="Model's top pick"), alt.Tooltip("forecast:N", title="Forecast from")])
+        base_tick = alt.Chart(rd).mark_tick(color=INK2, thickness=2, size=34).encode(
+            x=alt.X("label:N", sort=alt.SortField("week")), y="base:Q",
+            tooltip=[alt.Tooltip("base:Q", format=".1%", title="Random-guess odds")])
+        st.altair_chart((bars + base_tick).properties(height=260), width="stretch")
+        st.caption("Bars: what the model gave the team that went home. Gray tick: what a random guess would have given.")
+        st.dataframe(rd.sort_values("week", ascending=False).assign(
+            p=lambda x: (x["p"] * 100).round(0).astype(int).astype(str) + "%",
+            fav_p=lambda x: (x["fav_p"] * 100).round(0).astype(int).astype(str) + "%",
+            rank=lambda x: x["rank"].astype(str) + " of " + x["n"].astype(str))[
+            ["label", "chopped", "p", "rank", "fav", "fav_p", "forecast"]].rename(columns={
+                "label": "Week", "chopped": "Chopped", "p": "Model odds", "rank": "Model rank",
+                "fav": "Model's top pick", "fav_p": "Top pick odds", "forecast": "Forecast from"}),
+            hide_index=True, width="stretch")
 
 # ----------------------------------------------------------------------------- method
 with tab_about:
