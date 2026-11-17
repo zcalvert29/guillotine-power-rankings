@@ -26,7 +26,7 @@ Optional (repo Settings → Secrets and variables → Actions → Variables):
 App setting: the `MY_USERNAME` environment variable sets which team is highlighted (default `zcalvert29`).
 
 ## Schedule
-The Action runs daily at about 5:17 AM Central, which catches overnight waiver processing, free-agent moves, and projection and injury updates. To refresh more often (for example every couple of hours on Sundays), add another line under `schedule:` in `.github/workflows/refresh.yml`, like `- cron: "0 18-23/2 * * 0"`. A same-day run overwrites that day's snapshot.
+The Action runs daily at about 5:17 AM Central, which catches overnight waiver processing, free-agent moves, and projection and injury updates. On game days it also runs Sunday at about 10:43 AM, 1:43 PM, 4:43 PM, 7:43 PM and 10:43 PM, and Monday at about 5:43 PM, 8:43 PM and 11:43 PM Central (an hour later during daylight time). GitHub can start scheduled runs hours late, so treat these times as earliest starts. A same-day run overwrites that day's snapshot. To change the times, edit the `schedule:` lines in `.github/workflows/refresh.yml` (they are in UTC).
 
 ## Run locally
 ```bash

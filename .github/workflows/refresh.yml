@@ -3,6 +3,12 @@ name: Daily refresh
 on:
   schedule:
     - cron: "17 11 * * *"   # every day ~5:17 AM Central, after overnight waivers process
+    # Game-day extras (times are UTC; Central = UTC-6 in winter, UTC-5 during daylight time, so add an hour then).
+    # GitHub often starts scheduled runs late, so these also act as backups for the daily run.
+    - cron: "43 16,19,22 * * 0"  # Sun 10:43 AM (pre-kickoff), 1:43 PM, 4:43 PM CT
+    - cron: "43 1,4 * * 1"       # Sun 7:43 PM (after late games), 10:43 PM (after SNF) CT
+    - cron: "43 23 * * 1"        # Mon 5:43 PM CT (before MNF)
+    - cron: "43 2,5 * * 2"       # Mon 8:43 PM, 11:43 PM (after MNF) CT
   workflow_dispatch: {}      # "Run workflow" button for an on-demand refresh
 
 permissions:
